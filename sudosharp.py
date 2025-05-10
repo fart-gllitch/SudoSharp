@@ -2,6 +2,7 @@
 
 import re
 import sys
+import math
 
 class SudoSharpInterpreter:
     def __init__(self):
@@ -10,11 +11,53 @@ class SudoSharpInterpreter:
         self.program_lines = []
         self.current_line = 0
         self.loop_stack = []
+        
+        # Initialize built-in functions and variables
+        self.init_builtins()
+
+    def init_builtins(self):
+        """Initialize built-in functions and variables"""
+        # Basic math functions
+        self.variables["abs"] = abs
+        self.variables["max"] = max
+        self.variables["min"] = min
+        self.variables["sum"] = sum
+        self.variables["round"] = round
+        self.variables["pow"] = pow
+        
+        # Common math constants
+        self.variables["pi"] = math.pi
+        self.variables["e"] = math.e
+        
+        # Type conversion
+        self.variables["int"] = int
+        self.variables["float"] = float
+        self.variables["str"] = str
+        
+        # Collection functions
+        self.variables["len"] = len
+        self.variables["sort"] = sorted
 
     def tokenize(self, line):
         """Split the line into tokens while preserving quoted strings"""
+        # Check if this is a comment line
+        if line.strip().startswith('$') and not line.strip().lower().startswith('$print'):
+            return []  # Skip comment lines
+            
         tokens = []
         i = 0
+        
+        # Special handling for print with interpolation
+        if line.strip().lower().startswith('print'):
+            tokens.append('print')
+            
+            # Everything after "print" is considered the print argument
+            print_arg = line[line.lower().find('print') + 5:].strip()
+            if print_arg:
+                tokens.append(print_arg)
+            
+            return tokens
+        
         while i < len(line):
             # Handle quoted strings
             if line[i] == '"':
@@ -39,30 +82,51 @@ class SudoSharpInterpreter:
         
         return tokens
 
+    def process_string_interpolation(self, text):
+        """Process string interpolation with $variable$ syntax"""
+        # Find all patterns of $variable$
+        pattern = r'\$([a-zA-Z0-9_]+)\$'
+        
+        def replace_var(match):
+            var_name = match.group(1)
+            if var_name in self.variables:
+                return str(self.variables[var_name])
+            return f"${var_name}$"  # Keep as is if variable not found
+            
+        # Replace all occurrences
+        return re.sub(pattern, replace_var, text)
+
     def evaluate_expression(self, expr):
         """Evaluate simple expressions"""
+        # Process string interpolation first
+        if isinstance(expr, str) and '$' in expr:
+            expr = self.process_string_interpolation(expr)
+        
         # Handle variable references
         if expr in self.variables:
             return self.variables[expr]
         
         # Handle quoted strings
-        if expr.startswith('"') and expr.endswith('"'):
+        if isinstance(expr, str) and expr.startswith('"') and expr.endswith('"'):
             return expr[1:-1]
         
         # Handle numbers
         try:
-            return int(expr)
+            if isinstance(expr, str):
+                if '.' in expr:
+                    return float(expr)
+                else:
+                    return int(expr)
+            return expr  # Already a number
         except ValueError:
-            try:
-                return float(expr)
-            except ValueError:
-                pass
+            pass
         
         # Handle boolean
-        if expr.lower() == "yes" or expr.lower() == "true":
-            return True
-        if expr.lower() == "no" or expr.lower() == "false":
-            return False
+        if isinstance(expr, str):
+            if expr.lower() == "yes" or expr.lower() == "true":
+                return True
+            if expr.lower() == "no" or expr.lower() == "false":
+                return False
             
         return expr  # Return as is if nothing else matched
 
@@ -70,6 +134,12 @@ class SudoSharpInterpreter:
         """Execute print command"""
         if len(tokens) < 2:
             print()  # Print empty line
+            return
+        
+        # Process string interpolation in the print argument
+        if '$' in tokens[1]:
+            processed_text = self.process_string_interpolation(tokens[1])
+            print(processed_text)
             return
         
         # If there's a single token in quotes, just print it
@@ -93,6 +163,10 @@ class SudoSharpInterpreter:
         var_name = tokens[1]
         
         # Extract and evaluate the value
+        if tokens[2].lower() != "to":
+            print("Error: Invalid set command format. Use 'set variable to value'")
+            return
+            
         value_tokens = tokens[3:]
         
         # Handle simple assignment
@@ -101,9 +175,26 @@ class SudoSharpInterpreter:
             return
         
         # Handle math operations
-        if len(value_tokens) == 3:
+        if len(value_tokens) >= 3:
             left = self.evaluate_expression(value_tokens[0])
-            op = value_tokens[1]
+            op = value_tokens[1].lower()
+            
+            # Handle division which has a different syntax
+            if op == "divided" and len(value_tokens) >= 3 and value_tokens[2].lower() == "by":
+                if len(value_tokens) < 4:
+                    print("Error: Invalid division format. Use 'divided by value'")
+                    return
+                right = self.evaluate_expression(value_tokens[3])
+                if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+                    print(f"Error: Cannot perform division on non-numeric values: {left} and {right}")
+                    return
+                if right == 0:
+                    print("Error: Division by zero")
+                    return
+                self.variables[var_name] = left / right
+                return
+                
+            # Handle other operations
             right = self.evaluate_expression(value_tokens[2])
             
             if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
@@ -116,19 +207,13 @@ class SudoSharpInterpreter:
                 self.variables[var_name] = left - right
             elif op == "times":
                 self.variables[var_name] = left * right
-            elif op == "divided" and value_tokens[2] == "by" and len(value_tokens) >= 4:
-                divisor = self.evaluate_expression(value_tokens[3])
-                if divisor == 0:
-                    print("Error: Division by zero")
-                    return
-                self.variables[var_name] = left / divisor
             else:
                 print(f"Error: Unknown operation '{op}'")
                 return
 
     def execute_ask(self, tokens):
         """Execute input command"""
-        if len(tokens) < 3 or tokens[1] != "for":
+        if len(tokens) < 3 or tokens[1].lower() != "for":
             print("Error: Invalid ask command format. Use 'ask for variable'")
             return
             
@@ -146,11 +231,11 @@ class SudoSharpInterpreter:
 
     def execute_loop(self, tokens):
         """Execute loop command"""
-        if len(tokens) < 4:
+        if len(tokens) < 5:
             print("Error: Invalid loop command format. Use 'loop through start and end'")
             return
             
-        if tokens[1] != "through" or tokens[3] != "and":
+        if tokens[1].lower() != "through" or tokens[3].lower() != "and":
             print("Error: Invalid loop command format. Use 'loop through start and end'")
             return
             
@@ -165,6 +250,9 @@ class SudoSharpInterpreter:
                 "end": end
             })
             
+            # Set the loop variable 'i'
+            self.variables["i"] = start
+            
         except ValueError:
             print(f"Error: Loop bounds must be integers, got {tokens[2]} and {tokens[4]}")
 
@@ -177,6 +265,9 @@ class SudoSharpInterpreter:
         loop_info = self.loop_stack[-1]
         loop_info["iterator"] += 1
         
+        # Update the loop variable 'i'
+        self.variables["i"] = loop_info["iterator"]
+        
         if loop_info["iterator"] <= loop_info["end"]:
             # Continue loop
             self.current_line = loop_info["start"]
@@ -184,12 +275,42 @@ class SudoSharpInterpreter:
             # End loop
             self.loop_stack.pop()
 
+    def execute_import(self, tokens):
+        """Import built-in modules or custom code"""
+        if len(tokens) < 2:
+            print("Error: Invalid import command. Use 'import module'")
+            return
+            
+        module_name = tokens[1].lower()
+        
+        if module_name == "math":
+            # Import common math functions
+            self.variables["sin"] = math.sin
+            self.variables["cos"] = math.cos
+            self.variables["tan"] = math.tan
+            self.variables["sqrt"] = math.sqrt
+            self.variables["log"] = math.log
+            self.variables["floor"] = math.floor
+            self.variables["ceil"] = math.ceil
+            print(f"Imported math module")
+        else:
+            print(f"Error: Module '{module_name}' not found")
+
+    def execute_if(self, tokens):
+        """Execute if statement (simplified)"""
+        # Placeholder for future implementation
+        print("If statements are not yet implemented")
+
     def execute_line(self, line):
         """Execute a single line of code"""
         line = line.strip()
         
-        # Skip empty lines and comments
-        if not line or line.startswith('#'):
+        # Skip empty lines
+        if not line:
+            return
+            
+        # Skip comments that start with # or $
+        if line.startswith('#') or (line.startswith('$') and not line.lower().startswith('$print')):
             return
         
         tokens = self.tokenize(line)
@@ -206,12 +327,42 @@ class SudoSharpInterpreter:
             self.execute_ask(tokens)
         elif command == "loop":
             self.execute_loop(tokens)
-        elif command == "end" and len(tokens) > 1 and tokens[1] == "loop":
+        elif command == "end" and len(tokens) > 1 and tokens[1].lower() == "loop":
             self.execute_end_loop()
+        elif command == "import":
+            self.execute_import(tokens)
+        elif command == "if":
+            self.execute_if(tokens)
         elif command == "exit" or command == "quit":
             self.running = False
+        elif command == "help":
+            self.show_help()
         else:
             print(f"Error: Unknown command '{command}'")
+
+    def show_help(self):
+        """Show help information"""
+        print("\nSudoSharp Language Help")
+        print("======================")
+        print("Commands:")
+        print("  print [text/$variable$/etc] - Output text to console. Use $var$ for variable interpolation.")
+        print("  set variable to value - Assign a value to a variable")
+        print("  ask for variable - Get user input and store it in a variable")
+        print("  loop through start and end - Loop from start to end values")
+        print("  end loop - End a loop block")
+        print("  import module - Import a module (currently only 'math' is supported)")
+        print("  exit/quit - Exit the program")
+        print("  help - Show this help message")
+        print("\nMath Operations:")
+        print("  set result to value1 plus value2")
+        print("  set result to value1 minus value2")
+        print("  set result to value1 times value2")
+        print("  set result to value1 divided by value2")
+        print("\nBuilt-in Functions:")
+        print("  abs, max, min, sum, round, pow, int, float, str, len, sort")
+        print("\nComments:")
+        print("  $ This is a comment")
+        print("  # This is also a comment")
 
     def run_program(self, program):
         """Run a multi-line program"""
@@ -225,7 +376,8 @@ class SudoSharpInterpreter:
 
     def run_interactive(self):
         """Run the interpreter in interactive mode"""
-        print("SudoSharp Interpreter v0.1")
+        print("SudoSharp Interpreter v0.2")
+        print("Type 'help' for available commands")
         print("Type 'exit' or 'quit' to exit")
         print()
         
